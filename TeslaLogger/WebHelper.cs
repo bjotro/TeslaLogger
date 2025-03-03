@@ -78,6 +78,8 @@ namespace TeslaLogger
         private string cacheGUID = Guid.NewGuid().ToString();
 
         string authHost = "https://auth.tesla.com";
+        string authHostTelemetry = "https://fleet-auth.prd.vn.cloud.tesla.com";
+
         CookieContainer tokenCookieContainer;
 
         private bool _drivingOrChargingByStream; // defaults to false;
@@ -101,6 +103,7 @@ namespace TeslaLogger
 
         internal HttpClient httpclient_teslalogger_de = new HttpClient();
         internal HttpClient httpClientForAuthentification;
+        internal HttpClient httpClientForAuthentificationFleet = new HttpClient();
         internal static HttpClient httpClientABRP; // defaults to null;
         internal HttpClient httpClientSuCBingo; // defaults to null;
         private HttpClient httpClientTeslaAPI; // defaults to null;
@@ -123,6 +126,7 @@ namespace TeslaLogger
             {
                 // Dispose managed resources.
                 httpclient_teslalogger_de.Dispose();
+                httpClientForAuthentificationFleet.Dispose();
                 httpClientForAuthentification.Dispose();
                 httpClientABRP.Dispose();
                 httpClientSuCBingo.Dispose();
@@ -550,8 +554,11 @@ namespace TeslaLogger
 
             string refresh_token = car.DbHelper.GetRefreshToken(out string tesla_token);
 
-            if (car.FleetAPI)
+            if (car.FleetAPI && string.IsNullOrEmpty(ApplicationSettings.Default.TelemetryServerClientId))
                 return UpdateTeslaTokenFromRefreshTokenFromFleetAPI(refresh_token);
+            
+            if (car.FleetAPI && !string.IsNullOrEmpty(ApplicationSettings.Default.TelemetryServerClientId))
+                return UpdateTeslaTokenFromRefreshTokenFromFleetAPIPrivateApplication(refresh_token);
 
             if (car.oldAPIchinaCar)
                 authHost = "https://auth.tesla.cn";
@@ -769,6 +776,122 @@ namespace TeslaLogger
                 car.Log(ex.ToString());
                 car.CreateExceptionlessClient(ex).MarkAsCritical().Submit();
                 ExceptionlessClient.Default.ProcessQueueAsync();
+            }
+
+            return "";
+        }
+
+        private string UpdateTeslaTokenFromRefreshTokenFromFleetAPIPrivateApplication(string refresh_token)
+        {
+            try
+            {
+                var ts = DateTime.UtcNow - lastRefreshToken;
+                if (ts.TotalMinutes < 5)
+                {
+                    car.Log("ERROR: Refresh Token Spam!!!");
+                    return "";
+                }
+
+                lastRefreshToken = DateTime.UtcNow;
+
+                Log("Update Access Token From Refresh Token - FleetAPI!");
+                if (String.IsNullOrEmpty(refresh_token))
+                {
+                    car.Log("No Refresh Token");
+                    return "";
+                }
+
+                using (var formContent = new FormUrlEncodedContent(new[]
+                {
+                    new KeyValuePair<string, string>("grant_type", "refresh_token"),
+                    new KeyValuePair<string, string>("client_id", ApplicationSettings.Default.TelemetryServerClientId),
+                    new KeyValuePair<string, string>("refresh_token", refresh_token),
+                }))
+                {
+
+                    
+                    var response = httpClientForAuthentificationFleet.PostAsync(new Uri(authHostTelemetry), formContent).Result;
+                    string result = response.Content.ReadAsStringAsync().Result;
+                    if (response.IsSuccessStatusCode)
+                    {
+                        if (result.Contains("User revoked consent"))
+                            car.CreateExeptionlessLog("User revoked consent", "Teslalogger won't work anymore!", LogLevel.Warn).Submit();
+
+                        if (result.Contains("\"error\""))
+                        {
+                            string error = result;
+
+                            try
+                            {
+                                dynamic j2 = JsonConvert.DeserializeObject(result);
+                                error = j2["error"];
+                            }
+                            catch (Exception)
+                            { }
+
+                            car.CreateExeptionlessLog("UpdateTeslaTokenFromRefreshTokenFromFleetAPIPrivateApplication", error, LogLevel.Error)
+                                .AddObject(result, "Result Content")
+                                .Submit();
+                            car.Log(result);
+                            Thread.Sleep(30000);
+                            return "";
+                        }
+
+                        dynamic jsonResult = JsonConvert.DeserializeObject(result);
+                        if (jsonResult.ContainsKey("expires_in"))
+                        {
+                            var t = DateTime.UtcNow.AddSeconds((int)(jsonResult["expires_in"])).AddHours(-2);
+                            if (t > DateTime.UtcNow.AddHours(1))
+                                nextTeslaTokenFromRefreshToken = t;
+                            else
+                            {
+                                t = DateTime.UtcNow.AddSeconds((int)(jsonResult["expires_in"]));
+                                nextTeslaTokenFromRefreshToken = t;
+                            }
+
+                            Log("access token expires: " + nextTeslaTokenFromRefreshToken.ToLocalTime());
+
+                            /*
+                            CacheItemPolicy policy = new CacheItemPolicy();
+                            policy.AbsoluteExpiration = DateTime.Now.AddSeconds((int)(jsonResult["expires_in"])).AddMinutes(-5);
+                            policy.RemovedCallback = new CacheEntryRemovedCallback((CacheEntryRemovedArguments _) =>
+                            {
+                                Tools.DebugLog($"#{car.CarInDB}: access token will expire in 5 minutes");
+                                UpdateTeslaTokenFromRefreshToken();
+                            });
+                            _ = MemoryCache.Default.Add("RefreshToken_" + car.CarInDB+ $"_{Environment.TickCount}", policy, policy);
+                            */
+                        }
+                        string access_token = jsonResult["access_token"];
+
+                        string new_refresh_token = jsonResult["refresh_token"];
+                        CheckNewRefreshToken(refresh_token, new_refresh_token);
+
+                        SetNewAccessToken(access_token);
+                        return access_token;
+                    }
+                    else
+                    {
+                        car.CreateExeptionlessLog("UpdateTeslaTokenFromRefreshTokenFromFleetAPI", response.StatusCode.ToString(), LogLevel.Error)
+                            .AddObject(result, "Result Content")
+                            .Submit();
+
+                        Log("Error getting Access Token from Refreh Token: " + (int)response.StatusCode + " / " + response.StatusCode.ToString());
+                        Thread.Sleep(30000);
+                        return "";
+                    }
+                }
+            }
+            catch (ThreadAbortException)
+            {
+                System.Diagnostics.Debug.WriteLine("Thread Stop!");
+            }
+            catch (Exception ex)
+            {
+                car.Log(ex.ToString());
+                car.CreateExceptionlessClient(ex).MarkAsCritical().Submit();
+                ExceptionlessClient.Default.ProcessQueueAsync();
+                Thread.Sleep(30000);
             }
 
             return "";
@@ -5297,6 +5420,7 @@ DESC", con))
         public async Task<string> PostCommand(string cmd, string data, bool _json = false)
         {
             bool proxyServer = car.UseCommandProxyServer();
+            bool bleProxyServer = car.UseBleCommandProxyServer();
 
             Log("PostCommand: " + cmd + " - " + data);
             string cacheKey = "PostCommand" + car.CarInDB;
@@ -5316,10 +5440,15 @@ DESC", con))
 
                 string url = apiaddress + "api/1/vehicles/" + Tesla_id + "/" + cmd;
 
-                if (proxyServer)
+                if (proxyServer && !bleProxyServer)
                 {
                     car.Log("Use ProxyServer");
                     url = ApplicationSettings.Default.TeslaHttpProxyURL + "/api/1/vehicles/" + car.Vin + "/" + cmd;
+                }
+                else if (proxyServer && bleProxyServer)
+                {
+                    car.Log("Use BLE ProxyServer");
+                    url = ApplicationSettings.Default.TeslaBleHttpProxyURL + "/api/1/vehicles/" + car.Vin + "/" + cmd + "?wait=true";
                 }
                 else if (car.FleetAPI) // pre 2021 Model S / X
                 {
@@ -5330,6 +5459,7 @@ DESC", con))
                 using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, new Uri(url)))
                 {
                     request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Tesla_token);
+                
                     if (_json)
                     {
                         request.Content = new StringContent(data);

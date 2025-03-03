@@ -2118,6 +2118,24 @@ id = @carid", con))
             return false;
         }
 
+        public bool UseBleCommandProxyServer()
+        {
+            if (FleetAPI)
+            {
+                if (CarType == "models" || CarType == "modelx" || CarType == "models2")
+                    return false;
+
+                Address addr = Geofence.GetInstance().GetPOI(CurrentJSON.GetLatitude(), CurrentJSON.GetLongitude(), false);
+                if (addr != null && !string.IsNullOrEmpty(addr.name) && string.Equals(addr.name, ApplicationSettings.Default.TeslaBleHttpProxyLocation, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+            }
+
+            return false;
+        }
+
         internal bool FirmwareAtLeastVersion(string fw)
         {
             // parse car's firmware
