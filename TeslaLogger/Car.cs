@@ -2126,7 +2126,7 @@ id = @carid", con))
                     return false;
 
                 Address addr = Geofence.GetInstance().GetPOI(CurrentJSON.GetLatitude(), CurrentJSON.GetLongitude(), false);
-                if (addr != null && !string.IsNullOrEmpty(addr.name) && string.Equals(addr.name, ApplicationSettings.Default.TeslaBleHttpProxyLocation, StringComparison.Ordinal))
+                if (addr != null && !string.IsNullOrEmpty(addr.rawName) && string.Equals(addr.rawName, ApplicationSettings.Default.TeslaBleHttpProxyLocation, StringComparison.Ordinal))
                 {
                     return true;
                 }
