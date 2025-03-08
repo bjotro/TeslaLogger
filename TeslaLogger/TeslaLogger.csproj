@@ -294,6 +294,7 @@
     <Content Include="www\admin\menu.php" />
     <Content Include="www\admin\Parsedown.php" />
     <Content Include="www\admin\password.php" />
+    <Content Include="www\admin\password_fleet.php" />
     <Content Include="www\admin\password_info.php" />
     <Content Include="www\admin\password_write.php" />
     <Content Include="www\admin\redirect.php" />

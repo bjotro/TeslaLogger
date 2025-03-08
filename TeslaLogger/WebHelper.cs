@@ -78,7 +78,7 @@ namespace TeslaLogger
         private string cacheGUID = Guid.NewGuid().ToString();
 
         string authHost = "https://auth.tesla.com";
-        string authHostTelemetry = "https://fleet-auth.prd.vn.cloud.tesla.com";
+        string authHostTelemetry = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token";
 
         CookieContainer tokenCookieContainer;
 
@@ -794,7 +794,7 @@ namespace TeslaLogger
 
                 lastRefreshToken = DateTime.UtcNow;
 
-                Log("Update Access Token From Refresh Token - FleetAPI!");
+                Log("Update Access Token From Refresh Token Private ("+ ApplicationSettings.Default.TelemetryServerClientId + ") - FleetAPI!");
                 if (String.IsNullOrEmpty(refresh_token))
                 {
                     car.Log("No Refresh Token");
